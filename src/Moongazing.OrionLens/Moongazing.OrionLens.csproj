@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>OrionLens</PackageId>
+    <RootNamespace>Moongazing.OrionLens</RootNamespace>
+    <Description>Ambient correlation context for .NET: a correlation id and baggage that flow through an async call chain and propagate across HTTP boundaries via an ASP.NET Core middleware and an HttpClient handler.</Description>
+    <PackageTags>correlation;context;baggage;tracing;distributed;aspnetcore;orion</PackageTags>
+    <PackageReadmeFile>docs/README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="docs/README.md" Pack="true" PackagePath="docs/README.md" />
+    <InternalsVisibleTo Include="Moongazing.OrionLens.Tests" />
+  </ItemGroup>
+</Project>
