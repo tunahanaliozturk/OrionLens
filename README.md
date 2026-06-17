@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="OrionLens" width="150" />
+</p>
+
 # OrionLens
 
 [![CI/CD](https://github.com/tunahanaliozturk/OrionLens/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/tunahanaliozturk/OrionLens/actions/workflows/ci-cd.yml)
