@@ -26,9 +26,21 @@ public sealed class CorrelationPropagatorTests
     }
 
     [Fact]
-    public void Extract_falls_back_to_a_sentinel_when_generation_is_off()
+    public void Extract_takes_the_missing_id_verbatim_as_empty_when_generation_is_off()
     {
+        // Documented behaviour: with generation off and no inbound id, the id is taken verbatim,
+        // which is empty by default (MissingIdSentinel defaults to string.Empty). It is no longer
+        // replaced by an invented "unknown".
         var options = new CorrelationOptions { GenerateIdWhenMissing = false };
+        var context = CorrelationPropagator.Extract(_ => null, options);
+
+        Assert.Equal(string.Empty, context.CorrelationId);
+    }
+
+    [Fact]
+    public void Extract_uses_a_configured_sentinel_when_generation_is_off()
+    {
+        var options = new CorrelationOptions { GenerateIdWhenMissing = false, MissingIdSentinel = "unknown" };
         var context = CorrelationPropagator.Extract(_ => null, options);
 
         Assert.Equal("unknown", context.CorrelationId);

@@ -36,15 +36,24 @@ public sealed class CorrelationMiddleware
             header => context.Request.Headers.TryGetValue(header, out var value) ? value.ToString() : null,
             options);
 
-        if (options.WriteResponseHeader)
-        {
-            // Set before the response starts (this middleware runs early, before any body write),
-            // so the caller always sees the id even on an error response.
-            context.Response.Headers[options.CorrelationHeader] = correlation.CorrelationId;
-        }
+        // When the trace-context bridge is on, link the scope to the current W3C Activity so the
+        // correlation id and the trace id line up; otherwise establish the plain ambient scope. The
+        // trace-linked scope may reconcile the id to an existing activity's trace-id, so read the id
+        // to echo from the now-current context rather than the pre-scope value.
+        var scope = options.UseTraceContext
+            ? OrionTraceContextScope.BeginTraceLinkedScope(correlation)
+            : OrionContext.BeginScope(correlation);
 
-        using (OrionContext.BeginScope(correlation))
+        using (scope)
         {
+            if (options.WriteResponseHeader)
+            {
+                // Set before the response starts (this middleware runs early, before any body
+                // write), so the caller always sees the id even on an error response.
+                var effective = OrionContext.Current?.CorrelationId ?? correlation.CorrelationId;
+                context.Response.Headers[options.CorrelationHeader] = effective;
+            }
+
             await next(context).ConfigureAwait(false);
         }
     }

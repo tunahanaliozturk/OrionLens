@@ -31,6 +31,18 @@ public sealed class CorrelationContext
         return new CorrelationContext(correlationId, FrozenDictionary<string, string>.Empty);
     }
 
+    /// <summary>
+    /// Create a context with a correlation id that may be empty and no baggage. Used by the
+    /// propagator to honour an inbound id "verbatim (which may be empty)" when id generation is off,
+    /// without weakening the public <see cref="Create(string)"/> guard.
+    /// </summary>
+    /// <param name="correlationId">The correlation id, which may be empty but not null.</param>
+    internal static CorrelationContext CreateAllowingEmpty(string correlationId)
+    {
+        ArgumentNullException.ThrowIfNull(correlationId);
+        return new CorrelationContext(correlationId, FrozenDictionary<string, string>.Empty);
+    }
+
     /// <summary>Create a context with a correlation id and a baggage set.</summary>
     /// <param name="correlationId">The correlation id.</param>
     /// <param name="baggage">The baggage pairs.</param>

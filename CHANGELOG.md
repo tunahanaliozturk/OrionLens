@@ -6,6 +6,14 @@ All notable changes to OrionLens are documented in this file. The format is base
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-19
+
+### Added
+- W3C trace-context bridge: link the correlation id to the current Activity / W3C `traceparent` so the correlation id and the distributed trace id align across systems.
+
+### Fixed
+- `CorrelationPropagator.Extract` with `GenerateIdWhenMissing = false` no longer substitutes the literal `"unknown"` for a missing inbound id; it now returns the value verbatim (empty when absent) as documented. This is a behavior change for callers that relied on the `"unknown"` sentinel.
+
 ## [0.1.0] - 2026-06-15
 
 ### Added

@@ -53,13 +53,24 @@ public sealed class CorrelationPropagatorEdgeCaseTests
     }
 
     [Fact]
-    public void Extract_uses_a_sentinel_id_for_an_empty_header_when_generation_is_off()
+    public void Extract_takes_the_id_verbatim_as_empty_for_an_empty_header_when_generation_is_off()
     {
-        // Documents real behavior: although the XML doc says the id is "taken verbatim (which may
-        // be empty)" when generation is off, the implementation substitutes the literal "unknown"
-        // because the inbound header is empty. See suspected-bug note in the report.
+        // With generation off and no inbound id, the id is taken verbatim per the XML doc, which is
+        // empty by default. The previous "unknown" substitution was the documented-vs-code mismatch
+        // fixed in 0.2.0; a non-empty placeholder is now opt-in via MissingIdSentinel.
         var options = new CorrelationOptions { GenerateIdWhenMissing = false };
-        var context = CorrelationPropagator.Extract(_ => null, options);
+        var headers = new Dictionary<string, string> { ["X-Correlation-ID"] = string.Empty };
+        var context = CorrelationPropagator.Extract(h => headers.GetValueOrDefault(h), options);
+
+        Assert.Equal(string.Empty, context.CorrelationId);
+    }
+
+    [Fact]
+    public void Extract_uses_the_configured_sentinel_for_an_empty_header_when_generation_is_off()
+    {
+        var options = new CorrelationOptions { GenerateIdWhenMissing = false, MissingIdSentinel = "unknown" };
+        var headers = new Dictionary<string, string> { ["X-Correlation-ID"] = string.Empty };
+        var context = CorrelationPropagator.Extract(h => headers.GetValueOrDefault(h), options);
 
         Assert.Equal("unknown", context.CorrelationId);
     }

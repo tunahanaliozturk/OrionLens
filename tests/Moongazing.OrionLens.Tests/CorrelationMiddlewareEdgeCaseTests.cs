@@ -82,9 +82,29 @@ public sealed class CorrelationMiddlewareEdgeCaseTests
     }
 
     [Fact]
-    public async Task It_uses_the_sentinel_id_when_generation_is_off_and_no_header_is_sent()
+    public async Task It_takes_the_id_verbatim_as_empty_when_generation_is_off_and_no_header_is_sent()
     {
+        // With generation off and no inbound id, the id is empty by default; an empty response
+        // header value is not emitted by ASP.NET.
         var options = new CorrelationOptions { GenerateIdWhenMissing = false };
+        var context = new DefaultHttpContext();
+
+        string? observed = null;
+        var middleware = Middleware(_ =>
+        {
+            observed = OrionContext.Current?.CorrelationId;
+            return Task.CompletedTask;
+        }, options);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(string.Empty, observed);
+    }
+
+    [Fact]
+    public async Task It_uses_the_configured_sentinel_when_generation_is_off_and_no_header_is_sent()
+    {
+        var options = new CorrelationOptions { GenerateIdWhenMissing = false, MissingIdSentinel = "unknown" };
         var context = new DefaultHttpContext();
 
         string? observed = null;
