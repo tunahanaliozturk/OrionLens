@@ -1,5 +1,7 @@
 namespace Moongazing.OrionLens.Context;
 
+using System.Diagnostics;
+
 using Moongazing.OrionLens;
 
 /// <summary>
@@ -11,8 +13,11 @@ using Moongazing.OrionLens;
 public static class CorrelationPropagator
 {
     /// <summary>
-    /// Build a context from inbound headers. When the id header is absent, a new id is generated if
-    /// <see cref="CorrelationOptions.GenerateIdWhenMissing"/> is set.
+    /// Build a context from inbound headers. When the id header is absent the id is, in order of
+    /// preference: the inbound W3C trace-id (when <see cref="CorrelationOptions.UseTraceContext"/> is
+    /// set and a valid <c>traceparent</c> is present), a freshly generated id (when
+    /// <see cref="CorrelationOptions.GenerateIdWhenMissing"/> is set), or
+    /// <see cref="CorrelationOptions.MissingIdSentinel"/> taken verbatim (empty by default).
     /// </summary>
     /// <param name="getHeader">Returns the value of a header, or null if absent.</param>
     /// <param name="options">The header names and generation policy.</param>
@@ -22,14 +27,33 @@ public static class CorrelationPropagator
         ArgumentNullException.ThrowIfNull(options);
 
         var id = getHeader(options.CorrelationHeader);
+        CorrelationContext context;
         if (string.IsNullOrEmpty(id))
         {
-            // No inbound id: mint one, or fall back to a sentinel when generation is disabled so the
-            // context still has a non-empty id to log against.
-            id = options.GenerateIdWhenMissing ? Guid.NewGuid().ToString("N") : "unknown";
-        }
+            // No inbound correlation id. Prefer aligning with an inbound W3C trace, then minting,
+            // then the configured sentinel (empty by default) taken verbatim as documented.
+            var traceId = options.UseTraceContext
+                ? W3CTraceContext.TryGetTraceId(getHeader(options.TraceParentHeader))
+                : null;
 
-        var context = CorrelationContext.Create(id);
+            if (traceId is not null)
+            {
+                context = CorrelationContext.Create(traceId);
+            }
+            else if (options.GenerateIdWhenMissing)
+            {
+                context = CorrelationContext.Create(Guid.NewGuid().ToString("N"));
+            }
+            else
+            {
+                // CreateAllowingEmpty honours an empty sentinel "verbatim (which may be empty)".
+                context = CorrelationContext.CreateAllowingEmpty(options.MissingIdSentinel);
+            }
+        }
+        else
+        {
+            context = CorrelationContext.Create(id);
+        }
 
         var baggage = getHeader(options.BaggageHeader);
         if (!string.IsNullOrEmpty(baggage))
@@ -58,6 +82,28 @@ public static class CorrelationPropagator
         if (context.Baggage.Count > 0)
         {
             setHeader(options.BaggageHeader, FormatBaggage(context.Baggage));
+        }
+
+        if (options.UseTraceContext)
+        {
+            // Emit a traceparent whose trace-id is derived from the correlation id we just wrote, so a
+            // downstream service never sees a W3C trace-id that conflicts with X-Correlation-ID. Reuse
+            // the live Activity (for its span-id and flags) only when its trace-id already matches the
+            // one this correlation id maps to; an unrelated ambient Activity is ignored.
+            var activity = Activity.Current;
+            var aligned = activity is { IdFormat: ActivityIdFormat.W3C }
+                && string.Equals(
+                    activity.TraceId.ToHexString(),
+                    W3CTraceContext.ToTraceId(context.CorrelationId),
+                    StringComparison.Ordinal)
+                ? activity
+                : null;
+
+            var traceParent = W3CTraceContext.Format(context.CorrelationId, aligned);
+            if (traceParent is not null)
+            {
+                setHeader(options.TraceParentHeader, traceParent);
+            }
         }
     }
 
