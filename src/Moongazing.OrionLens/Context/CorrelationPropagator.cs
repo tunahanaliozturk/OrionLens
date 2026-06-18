@@ -86,9 +86,20 @@ public static class CorrelationPropagator
 
         if (options.UseTraceContext)
         {
-            // Emit a traceparent so a downstream service sees a W3C trace-id that lines up with this
-            // correlation id (or with the live Activity, when one is running).
-            var traceParent = W3CTraceContext.Format(context.CorrelationId, Activity.Current);
+            // Emit a traceparent whose trace-id is derived from the correlation id we just wrote, so a
+            // downstream service never sees a W3C trace-id that conflicts with X-Correlation-ID. Reuse
+            // the live Activity (for its span-id and flags) only when its trace-id already matches the
+            // one this correlation id maps to; an unrelated ambient Activity is ignored.
+            var activity = Activity.Current;
+            var aligned = activity is { IdFormat: ActivityIdFormat.W3C }
+                && string.Equals(
+                    activity.TraceId.ToHexString(),
+                    W3CTraceContext.ToTraceId(context.CorrelationId),
+                    StringComparison.Ordinal)
+                ? activity
+                : null;
+
+            var traceParent = W3CTraceContext.Format(context.CorrelationId, aligned);
             if (traceParent is not null)
             {
                 setHeader(options.TraceParentHeader, traceParent);

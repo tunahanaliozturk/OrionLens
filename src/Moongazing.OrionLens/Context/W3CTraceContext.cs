@@ -31,6 +31,13 @@ internal static class W3CTraceContext
             return null;
         }
 
+        // Version 00 is exactly four fields; only a later version may append more. Reject extra
+        // trailing segments under 00 rather than silently parsing a malformed header.
+        if (fields[0] == "00" && fields.Length != 4)
+        {
+            return null;
+        }
+
         var traceId = fields[1];
         if (traceId.Length != TraceIdHexLength || !IsLowerHex(traceId) || IsAllZeros(traceId))
         {
