@@ -16,6 +16,7 @@ internal static class Program
         BaggageCopyOnWriteDemo.Run();
         PropagationDemo.Run();
         GenerateWhenMissingDemo.Run();
+        TraceContextDemo.Run();
 
         Console.WriteLine();
         Console.WriteLine("Demo complete.");

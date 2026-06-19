@@ -39,6 +39,11 @@ without disturbing its parent.
   when one is missing, and echoes it back on the response.
 - **Outbound `HttpClient` handler.** `CorrelationPropagationHandler` injects the ambient context
   into every outbound request, so downstream services receive the same id and baggage.
+- **W3C trace-context bridge.** When `UseTraceContext` is enabled, the correlation id is aligned with
+  the W3C `traceparent` so the correlation id and the distributed trace id line up across systems. On
+  extract, an inbound `traceparent` trace-id becomes the correlation id when no id header is present;
+  on inject, a `traceparent` is emitted whose trace-id is derived from the correlation id, so it never
+  conflicts with `X-Correlation-ID`.
 - **No third-party dependencies.** The core targets `net8.0`, `net9.0`, and `net10.0`; the ASP.NET
   Core surface uses only the shared framework.
 
@@ -164,6 +169,46 @@ CorrelationPropagator.Inject(
     options);
 ```
 
+### W3C trace-context bridge
+
+Set `UseTraceContext` to align the correlation id with the W3C `traceparent`, so the correlation id
+and the distributed trace id are the same value across systems. It is off by default, so behaviour is
+unchanged until you opt in:
+
+```csharp
+builder.Services.AddOrionLens(o => o.UseTraceContext = true);
+```
+
+With it on, `Extract` and `Inject` also read and write the `traceparent` header:
+
+- On **extract**, when there is no `X-Correlation-ID` and the inbound `traceparent` carries a valid
+  32-hex trace-id, that trace-id becomes the correlation id. An explicit `X-Correlation-ID` still
+  wins, so the trace-id is only adopted when no id header is present.
+- On **inject**, a `traceparent` is emitted whose trace-id is derived from the correlation id (an id
+  that is already 32 lowercase hex characters is used as-is; any other id is hashed into a stable
+  trace-id). A live `Activity` is reused only when its trace-id already matches the one the
+  correlation id maps to, so the emitted `traceparent` never conflicts with `X-Correlation-ID`.
+
+```csharp
+using Moongazing.OrionLens;
+using Moongazing.OrionLens.Context;
+
+var options = new CorrelationOptions { UseTraceContext = true };
+
+// inbound carrying only a traceparent: its trace-id becomes the correlation id
+var context = CorrelationPropagator.Extract(
+    name => inbound.TryGetValue(name, out var v) ? v : null,
+    options);
+
+// outbound: Inject writes X-Correlation-ID and an aligned traceparent
+CorrelationPropagator.Inject(
+    context,
+    (name, value) => outgoing[name] = value,
+    options);
+```
+
+The trace header name is configurable through `TraceParentHeader` (default `traceparent`).
+
 ### ASP.NET Core middleware
 
 `UseOrionLens()` adds `CorrelationMiddleware` to the pipeline. Place it early, before anything that
@@ -186,6 +231,8 @@ builder.Services.AddOrionLens(o =>
     o.BaggageHeader = "X-Orion-Baggage";        // inbound/outbound baggage header
     o.GenerateIdWhenMissing = true;             // mint a new id when inbound has none
     o.WriteResponseHeader = true;               // echo the id on the response
+    o.UseTraceContext = true;                   // bridge the id to the W3C traceparent
+    o.TraceParentHeader = "traceparent";        // trace-context header name
 });
 ```
 
@@ -195,6 +242,8 @@ builder.Services.AddOrionLens(o =>
 | `BaggageHeader`         | `string` | `X-Orion-Baggage`  | Header carrying baggage as percent-encoded `key=value` pairs joined by commas.                             |
 | `GenerateIdWhenMissing` | `bool`   | `true`             | When true, an inbound request without an id is given a freshly generated one; when false, the id is taken verbatim. |
 | `WriteResponseHeader`   | `bool`   | `true`             | When true, the middleware echoes the correlation id back on the response.                                 |
+| `UseTraceContext`       | `bool`   | `false`            | When true, aligns the correlation id with the W3C `traceparent`: adopts an inbound trace-id when no id header is present and emits a `traceparent` derived from the id on inject. |
+| `TraceParentHeader`     | `string` | `traceparent`      | Header carrying the W3C trace context, read on extract and written on inject when `UseTraceContext` is set. |
 
 `AddOrionLens` registers the resolved `CorrelationOptions` as a singleton and
 `CorrelationPropagationHandler` as transient, so the handler is ready to attach to any named or typed
