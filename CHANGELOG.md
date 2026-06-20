@@ -6,6 +6,12 @@ All notable changes to OrionLens are documented in this file. The format is base
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-06-20
+
+### Performance
+
+- Trace-context bridge on the inject hot path now allocates less and does less work. `W3CTraceContext.ToTraceId` encodes the correlation id into a stack buffer and writes the trace-id as lowercase hex directly into a span, removing the per-call `byte[]` and the uppercase-then-lowercase double string allocation (about 248 to 88 bytes per hashed id, the residual 88 being the returned string). `CorrelationPropagator.Inject` derives the trace-id once and reuses it instead of hashing the correlation id a second time inside `Format` when bridging to the W3C trace context. No public API or wire-format change; all existing tests pass unchanged.
+
 ## [0.2.0] - 2026-06-19
 
 ### Added
