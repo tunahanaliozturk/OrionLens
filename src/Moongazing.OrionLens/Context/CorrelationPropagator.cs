@@ -90,16 +90,20 @@ public static class CorrelationPropagator
             // downstream service never sees a W3C trace-id that conflicts with X-Correlation-ID. Reuse
             // the live Activity (for its span-id and flags) only when its trace-id already matches the
             // one this correlation id maps to; an unrelated ambient Activity is ignored.
+            // Derive the trace-id once: it is needed both to test alignment with any ambient activity
+            // and (when nothing aligns) as the emitted trace-id, so Format reuses it instead of
+            // hashing the correlation id a second time.
+            var derivedTraceId = W3CTraceContext.ToTraceId(context.CorrelationId);
             var activity = Activity.Current;
             var aligned = activity is { IdFormat: ActivityIdFormat.W3C }
                 && string.Equals(
                     activity.TraceId.ToHexString(),
-                    W3CTraceContext.ToTraceId(context.CorrelationId),
+                    derivedTraceId,
                     StringComparison.Ordinal)
                 ? activity
                 : null;
 
-            var traceParent = W3CTraceContext.Format(context.CorrelationId, aligned);
+            var traceParent = W3CTraceContext.Format(context.CorrelationId, aligned, derivedTraceId);
             if (traceParent is not null)
             {
                 setHeader(options.TraceParentHeader, traceParent);

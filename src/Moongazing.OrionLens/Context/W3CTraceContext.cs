@@ -12,6 +12,9 @@ internal static class W3CTraceContext
 {
     private const int TraceIdHexLength = 32;
 
+    /// <summary>Lowercase hex digits, indexed by nibble value, for span-based formatting.</summary>
+    private static ReadOnlySpan<char> HexLower => "0123456789abcdef";
+
     /// <summary>
     /// Parse the 32-hex trace-id out of a <c>traceparent</c> header value, or return null when the
     /// value is absent or malformed. Validation is deliberately lenient about the version and flags
@@ -56,7 +59,18 @@ internal static class W3CTraceContext
     /// </summary>
     /// <param name="correlationId">The correlation id to align the trace-id with.</param>
     /// <param name="activity">The current activity, if any.</param>
-    public static string? Format(string correlationId, Activity? activity)
+    public static string? Format(string correlationId, Activity? activity) =>
+        Format(correlationId, activity, ToTraceId(correlationId));
+
+    /// <summary>
+    /// As <see cref="Format(string, Activity?)"/>, but accepts the correlation id's derived trace-id
+    /// when the caller has already computed it (the propagator computes it to decide whether an
+    /// ambient activity is aligned), so it is not hashed a second time on the inject hot path.
+    /// </summary>
+    /// <param name="correlationId">The correlation id to align the trace-id with.</param>
+    /// <param name="activity">The current activity, if any.</param>
+    /// <param name="derivedTraceId">The result of <see cref="ToTraceId(string)"/> for the id.</param>
+    public static string? Format(string correlationId, Activity? activity, string? derivedTraceId)
     {
         if (activity is not null && activity.IdFormat == ActivityIdFormat.W3C)
         {
@@ -67,14 +81,13 @@ internal static class W3CTraceContext
             }
         }
 
-        var derived = ToTraceId(correlationId);
-        if (derived is null)
+        if (derivedTraceId is null)
         {
             return null;
         }
 
         var spanId = ActivitySpanId.CreateRandom().ToHexString();
-        return $"00-{derived}-{spanId}-00";
+        return $"00-{derivedTraceId}-{spanId}-00";
     }
 
     /// <summary>
@@ -96,14 +109,57 @@ internal static class W3CTraceContext
             return correlationId;
         }
 
-        Span<byte> hash = stackalloc byte[32];
-        System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(correlationId), hash);
+        // Hash the id's UTF-8 bytes into a stable 16-byte trace-id. Encode the source into a stack
+        // buffer when it fits (the common case for ids of a few dozen chars) so no byte[] is rented;
+        // fall back to the heap only for pathologically long ids.
+        var maxByteCount = System.Text.Encoding.UTF8.GetMaxByteCount(correlationId.Length);
+        byte[]? rented = null;
+        Span<byte> utf8 = maxByteCount <= 256
+            ? stackalloc byte[256]
+            : (rented = System.Buffers.ArrayPool<byte>.Shared.Rent(maxByteCount));
 
-        // Take the first 16 bytes as the trace-id; guard the all-zero edge case.
-        // Convert.ToHexStringLower is net9+, so use the net8-compatible uppercase overload then lower.
-        var traceId = Convert.ToHexString(hash[..16]).ToLowerInvariant();
-        return IsAllZeros(traceId) ? null : traceId;
+        Span<byte> hash = stackalloc byte[32];
+        try
+        {
+            var written = System.Text.Encoding.UTF8.GetBytes(correlationId, utf8);
+            System.Security.Cryptography.SHA256.HashData(utf8[..written], hash);
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+
+        // Take the first 16 bytes as the trace-id; guard the all-zero edge case. Format lowercase hex
+        // directly into a stack buffer to avoid the uppercase-then-lower double string allocation.
+        Span<char> hex = stackalloc char[TraceIdHexLength];
+        if (!TryWriteHexLower(hash[..16], hex))
+        {
+            return null;
+        }
+
+        return new string(hex);
+    }
+
+    /// <summary>
+    /// Write the lowercase hex encoding of <paramref name="bytes"/> into <paramref name="destination"/>.
+    /// Returns false when every nibble is zero (an all-zero trace-id, which is invalid).
+    /// </summary>
+    private static bool TryWriteHexLower(ReadOnlySpan<byte> bytes, Span<char> destination)
+    {
+        var hexLower = HexLower;
+        var allZero = true;
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            var b = bytes[i];
+            destination[(i * 2) + 0] = hexLower[b >> 4];
+            destination[(i * 2) + 1] = hexLower[b & 0xF];
+            allZero &= b == 0;
+        }
+
+        return !allZero;
     }
 
     private static string FlagsFor(Activity activity) =>
