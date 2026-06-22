@@ -44,6 +44,12 @@ without disturbing its parent.
   extract, an inbound `traceparent` trace-id becomes the correlation id when no id header is present;
   on inject, a `traceparent` is emitted whose trace-id is derived from the correlation id, so it never
   conflicts with `X-Correlation-ID`.
+- **Logging enrichment helpers.** `ILogger.BeginCorrelationScope()` pushes the correlation id (and
+  selected baggage) into a logging scope, so structured logs carry it without a manual `BeginScope` at
+  every log site. Builds only on the logging abstractions and binds no logging sink.
+- **Baggage policy.** Optional caps on baggage count (`MaxBaggageCount`) and encoded size
+  (`MaxBaggageBytes`), and inbound-only keys (`NonPropagatingBaggageKeys`) that are read on extract but
+  never emitted on inject, so headers stay small and internal values do not cross a trust boundary.
 - **No third-party dependencies.** The core targets `net8.0`, `net9.0`, and `net10.0`; the ASP.NET
   Core surface uses only the shared framework.
 
@@ -209,6 +215,61 @@ CorrelationPropagator.Inject(
 
 The trace header name is configurable through `TraceParentHeader` (default `traceparent`).
 
+### Logging enrichment
+
+`ILogger.BeginCorrelationScope()` opens a logging scope carrying the ambient correlation id, so every
+log written inside the `using` carries it without a manual `BeginScope` at each call site. The helper
+builds only on `Microsoft.Extensions.Logging.Abstractions` and binds no logging sink, so it works with
+any provider that honours scopes. It returns null when no context is established, so a bare `using`
+over the result is safe:
+
+```csharp
+using Moongazing.OrionLens.Logging;
+
+using (logger.BeginCorrelationScope())
+{
+    logger.LogInformation("Handling order");   // scope carries CorrelationId
+}
+```
+
+To enrich selected baggage as well, opt keys in through `LoggedBaggageKeys` and pass the options. Only
+the named keys reach the scope, so internal or high-cardinality values stay out of logs unless you opt
+them in:
+
+```csharp
+var options = new CorrelationOptions();
+options.LoggedBaggageKeys.Add("tenant");
+
+using (logger.BeginCorrelationScope(options))
+{
+    logger.LogInformation("Handling order");   // scope carries CorrelationId and tenant
+}
+```
+
+An overload takes an explicit `CorrelationContext`, for a background job or a message consumer that
+holds a context directly rather than through the ambient scope.
+
+### Baggage policy
+
+Baggage policy keeps propagated headers small and stops internal values from crossing a trust
+boundary. It is enforced on both `Extract` and `Inject`, and breaches are handled by dropping pairs,
+never by throwing, so a policy breach cannot fail a live request. With nothing configured (the
+default), baggage propagates exactly as before.
+
+```csharp
+builder.Services.AddOrionLens(o =>
+{
+    o.MaxBaggageCount = 8;                       // at most 8 baggage pairs cross a boundary
+    o.MaxBaggageBytes = 1024;                    // at most 1024 bytes of encoded baggage header
+    o.NonPropagatingBaggageKeys.Add("internal"); // read inbound, never written outbound
+});
+```
+
+- `MaxBaggageCount` and `MaxBaggageBytes` cap the pair count and the encoded header size. When a cap
+  is reached, further pairs are dropped in ordinal key order, so the kept set is deterministic.
+- `NonPropagatingBaggageKeys` marks keys inbound-only: such a key is still readable after `Extract`,
+  but it is never written on `Inject`.
+
 ### ASP.NET Core middleware
 
 `UseOrionLens()` adds `CorrelationMiddleware` to the pipeline. Place it early, before anything that
@@ -233,6 +294,10 @@ builder.Services.AddOrionLens(o =>
     o.WriteResponseHeader = true;               // echo the id on the response
     o.UseTraceContext = true;                   // bridge the id to the W3C traceparent
     o.TraceParentHeader = "traceparent";        // trace-context header name
+    o.MaxBaggageCount = 8;                       // cap baggage pair count (null = no cap)
+    o.MaxBaggageBytes = 1024;                    // cap encoded baggage size (null = no cap)
+    o.NonPropagatingBaggageKeys.Add("internal"); // inbound-only baggage keys
+    o.LoggedBaggageKeys.Add("tenant");           // baggage keys the log scope helpers include
 });
 ```
 
@@ -244,6 +309,10 @@ builder.Services.AddOrionLens(o =>
 | `WriteResponseHeader`   | `bool`   | `true`             | When true, the middleware echoes the correlation id back on the response.                                 |
 | `UseTraceContext`       | `bool`   | `false`            | When true, aligns the correlation id with the W3C `traceparent`: adopts an inbound trace-id when no id header is present and emits a `traceparent` derived from the id on inject. |
 | `TraceParentHeader`     | `string` | `traceparent`      | Header carrying the W3C trace context, read on extract and written on inject when `UseTraceContext` is set. |
+| `MaxBaggageCount`       | `int?`   | `null`             | Maximum baggage pairs that cross a boundary; over the cap, pairs are dropped in ordinal key order on extract and inject. `null` means no cap. Must be greater than zero when set. |
+| `MaxBaggageBytes`       | `int?`   | `null`             | Maximum encoded baggage header size in bytes; over the cap, pairs are dropped in ordinal key order on extract and inject. `null` means no cap. Must be greater than zero when set. |
+| `NonPropagatingBaggageKeys` | `ISet<string>` | empty      | Baggage keys read on extract but never written on inject, so an internal value does not cross a trust boundary. |
+| `LoggedBaggageKeys`     | `ISet<string>` | empty          | Baggage keys (besides the correlation id) that the logging enrichment helpers push into a logging scope. |
 
 `AddOrionLens` registers the resolved `CorrelationOptions` as a singleton and
 `CorrelationPropagationHandler` as transient, so the handler is ready to attach to any named or typed

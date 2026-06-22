@@ -6,6 +6,13 @@ All notable changes to OrionLens are documented in this file. The format is base
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-22
+
+### Added
+
+- Logging enrichment helpers. `ILogger.BeginCorrelationScope(...)` opens a logging scope carrying the correlation id (and the baggage keys selected by `CorrelationOptions.LoggedBaggageKeys`) so structured logs carry it without a manual `BeginScope` at every log site. The scope state, `CorrelationLogScope`, is an `IReadOnlyList<KeyValuePair<string, object>>` that structured providers lift into named properties and that renders as text via `ToString` for providers that format a scope as a single string. The helpers build only on `Microsoft.Extensions.Logging.Abstractions` and bind no logging sink. An ambient overload returns null when no context is established; an explicit-context overload enriches from a supplied `CorrelationContext` for background jobs and message consumers. Only opted-in baggage keys reach the scope, keeping internal or high-cardinality values out of logs.
+- Baggage policy on `CorrelationOptions`, enforced at propagation time. `MaxBaggageCount` caps the number of baggage pairs and `MaxBaggageBytes` caps the encoded header size; both are enforced on inbound extract and outbound inject by dropping the pairs that would exceed the limit (in ordinal key order, so the kept set is deterministic) rather than throwing, so a policy breach never fails a live request. `NonPropagatingBaggageKeys` marks keys inbound-only: such a key is accepted on extract but never written on inject, so an internal value is not leaked across a trust boundary. Caps are validated as positive on registration. With no policy configured, outbound formatting takes a fast path that keeps the prior wire output and cost exactly.
+
 ## [0.2.1] - 2026-06-20
 
 ### Performance

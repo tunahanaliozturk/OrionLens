@@ -54,11 +54,66 @@ public sealed class CorrelationOptions
     /// </summary>
     public string TraceParentHeader { get; set; } = "traceparent";
 
+    /// <summary>
+    /// The maximum number of baggage pairs allowed to cross a propagation boundary, or null (the
+    /// default) for no limit. The cap is enforced on both inbound extract and outbound inject: once
+    /// the limit is reached, further pairs are dropped (not propagated) rather than throwing, so a
+    /// policy breach never fails a live request. Pairs are kept in ordinal key order, so the dropped
+    /// set is deterministic. Must be greater than zero when set.
+    /// </summary>
+    public int? MaxBaggageCount { get; set; }
+
+    /// <summary>
+    /// The maximum total size, in bytes, of the encoded baggage header value (the percent-encoded
+    /// <c>key=value</c> pairs joined by commas) allowed to cross a propagation boundary, or null (the
+    /// default) for no limit. As with <see cref="MaxBaggageCount"/>, the cap is enforced on extract
+    /// and inject by dropping the pairs that would push the encoded value past the limit, in ordinal
+    /// key order, rather than throwing. Must be greater than zero when set.
+    /// </summary>
+    public int? MaxBaggageBytes { get; set; }
+
+    /// <summary>
+    /// Baggage keys marked as inbound-only / non-propagating. Such a key is still accepted on inbound
+    /// <see cref="Context.CorrelationPropagator.Extract"/> (so internal code can read it), but it is
+    /// never written on outbound <see cref="Context.CorrelationPropagator.Inject"/>, so an internal
+    /// value is not leaked across a trust boundary to a downstream service. Comparison is ordinal,
+    /// matching baggage key comparison elsewhere. Empty by default (every key propagates).
+    /// </summary>
+    public ISet<string> NonPropagatingBaggageKeys { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The baggage keys (besides the correlation id, which is always included) that the logging
+    /// enrichment helpers push into a logging scope. Selecting keys explicitly, rather than emitting
+    /// all baggage, keeps internal or high-cardinality values out of logs unless you opt them in.
+    /// Comparison is ordinal. Empty by default, so only the correlation id is enriched.
+    /// </summary>
+    public ISet<string> LoggedBaggageKeys { get; } = new HashSet<string>(StringComparer.Ordinal);
+
     internal void Validate()
     {
         ArgumentException.ThrowIfNullOrEmpty(CorrelationHeader);
         ArgumentException.ThrowIfNullOrEmpty(BaggageHeader);
         ArgumentNullException.ThrowIfNull(MissingIdSentinel);
         ArgumentException.ThrowIfNullOrEmpty(TraceParentHeader);
+
+        if (MaxBaggageCount is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(MaxBaggageCount), MaxBaggageCount, "MaxBaggageCount must be greater than zero when set.");
+        }
+
+        if (MaxBaggageBytes is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(MaxBaggageBytes), MaxBaggageBytes, "MaxBaggageBytes must be greater than zero when set.");
+        }
     }
+
+    /// <summary>
+    /// Whether any baggage policy (a count or size cap, or a non-propagating key) is configured. When
+    /// false, outbound formatting takes a fast path that emits every pair in the original order with no
+    /// extra allocation, so the no-policy case keeps its prior wire output and cost exactly.
+    /// </summary>
+    internal bool HasBaggagePolicy =>
+        MaxBaggageCount is not null || MaxBaggageBytes is not null || NonPropagatingBaggageKeys.Count > 0;
 }

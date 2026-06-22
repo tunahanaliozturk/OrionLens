@@ -1,6 +1,7 @@
 namespace Moongazing.OrionLens.Context;
 
 using System.Diagnostics;
+using System.Text;
 
 using Moongazing.OrionLens;
 
@@ -58,7 +59,7 @@ public static class CorrelationPropagator
         var baggage = getHeader(options.BaggageHeader);
         if (!string.IsNullOrEmpty(baggage))
         {
-            foreach (var (key, value) in ParseBaggage(baggage))
+            foreach (var (key, value) in ParseBaggage(baggage, options))
             {
                 context = context.WithBaggage(key, value);
             }
@@ -81,7 +82,11 @@ public static class CorrelationPropagator
 
         if (context.Baggage.Count > 0)
         {
-            setHeader(options.BaggageHeader, FormatBaggage(context.Baggage));
+            var formatted = FormatBaggage(context.Baggage, options);
+            if (!string.IsNullOrEmpty(formatted))
+            {
+                setHeader(options.BaggageHeader, formatted);
+            }
         }
 
         if (options.UseTraceContext)
@@ -111,7 +116,75 @@ public static class CorrelationPropagator
         }
     }
 
-    private static string FormatBaggage(IReadOnlyDictionary<string, string> baggage)
+    /// <summary>
+    /// Encode the baggage for the outbound header, applying the configured policy: non-propagating
+    /// keys are dropped, and the count and byte caps bound what is emitted. Pairs are considered in
+    /// ordinal key order so the kept set is deterministic when a cap drops some of them. Returns an
+    /// empty string when nothing survives the policy, in which case the header is omitted.
+    /// </summary>
+    private static string FormatBaggage(IReadOnlyDictionary<string, string> baggage, CorrelationOptions options)
+    {
+        if (!options.HasBaggagePolicy)
+        {
+            // Fast path: no policy configured, so emit every pair exactly as prior versions did
+            // (dictionary order, no per-pair caps), with no extra allocation or sorting.
+            return FormatBaggageUnfiltered(baggage);
+        }
+
+        var nonPropagating = options.NonPropagatingBaggageKeys;
+        var maxCount = options.MaxBaggageCount;
+        var maxBytes = options.MaxBaggageBytes;
+
+        // Order by key so the policy keeps a stable, predictable subset under a cap rather than
+        // depending on dictionary enumeration order.
+        var keys = new List<string>(baggage.Count);
+        foreach (var key in baggage.Keys)
+        {
+            if (nonPropagating.Count == 0 || !nonPropagating.Contains(key))
+            {
+                keys.Add(key);
+            }
+        }
+
+        keys.Sort(StringComparer.Ordinal);
+
+        var builder = new StringBuilder();
+        var emitted = 0;
+        foreach (var key in keys)
+        {
+            if (maxCount is { } countLimit && emitted >= countLimit)
+            {
+                break;
+            }
+
+            var encoded = $"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(baggage[key])}";
+            var addedLength = emitted == 0 ? encoded.Length : encoded.Length + 1; // +1 for the comma separator.
+
+            if (maxBytes is { } byteLimit && builder.Length + addedLength > byteLimit)
+            {
+                // Skip this pair (it would push the encoded header past the byte cap) but keep trying
+                // later, smaller pairs that may still fit.
+                continue;
+            }
+
+            if (emitted > 0)
+            {
+                builder.Append(',');
+            }
+
+            builder.Append(encoded);
+            emitted++;
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Encode every baggage pair with no policy applied, in dictionary enumeration order, matching the
+    /// pre-policy behaviour exactly. Used on the no-policy fast path so the common case keeps its prior
+    /// wire output and allocation profile.
+    /// </summary>
+    private static string FormatBaggageUnfiltered(IReadOnlyDictionary<string, string> baggage)
     {
         var parts = new List<string>(baggage.Count);
         foreach (var (key, value) in baggage)
@@ -122,20 +195,49 @@ public static class CorrelationPropagator
         return string.Join(',', parts);
     }
 
-    private static IEnumerable<KeyValuePair<string, string>> ParseBaggage(string header)
+    /// <summary>
+    /// Parse the inbound baggage header, applying the count cap (the byte cap is bounded by the
+    /// inbound header length, which is already finite). Inbound-only / non-propagating marks do not
+    /// apply on extract: such keys are accepted inbound and only suppressed on inject.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, string>> ParseBaggage(string header, CorrelationOptions options)
     {
+        var maxCount = options.MaxBaggageCount;
+        var maxBytes = options.MaxBaggageBytes;
+        var emitted = 0;
+        var bytes = 0;
+
         foreach (var pair in header.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
+            if (maxCount is { } countLimit && emitted >= countLimit)
+            {
+                yield break;
+            }
+
             var separator = pair.IndexOf('=', StringComparison.Ordinal);
             if (separator <= 0)
             {
                 continue;
             }
 
+            // Measure against the encoded (wire) length of the pair so the inbound byte cap matches
+            // the same accounting the outbound side uses.
+            if (maxBytes is { } byteLimit)
+            {
+                var addedLength = emitted == 0 ? pair.Length : pair.Length + 1; // +1 for the comma separator.
+                if (bytes + addedLength > byteLimit)
+                {
+                    yield break;
+                }
+
+                bytes += addedLength;
+            }
+
             var key = Uri.UnescapeDataString(pair[..separator]);
             var value = Uri.UnescapeDataString(pair[(separator + 1)..]);
             if (!string.IsNullOrEmpty(key))
             {
+                emitted++;
                 yield return new KeyValuePair<string, string>(key, value);
             }
         }
