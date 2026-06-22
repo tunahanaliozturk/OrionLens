@@ -1,31 +1,79 @@
 # Roadmap
 
-Ideas under consideration for OrionLens. These are directions, not commitments, and nothing here has
-a date. The current release (0.1.0) covers the ambient correlation context, the immutable data model,
-HTTP-agnostic propagation, the ASP.NET Core middleware, and the outbound `HttpClient` handler. If an
-item matters to your workload, open an issue and say so; real demand is what moves things up the
-list.
+OrionLens is an ambient correlation-context library for .NET: a correlation id plus a little baggage,
+established at the edge of a request and carried through every `await` and across downstream calls,
+with HTTP-agnostic propagation, an ASP.NET Core middleware, and an outbound `HttpClient` handler.
 
-## Ideas being considered
+The current release is **0.2.1**. The sections below record what has shipped and the directions under
+consideration next. Forward items are directions, not commitments, and the version groupings indicate
+likely sequencing rather than firm dates. If an item matters to your workload, open an issue and say
+so; real demand is what moves things up the list.
 
-- **Diagnostics bridge.** Optionally tie the correlation id to `System.Diagnostics.Activity` so the
-  id lines up with OpenTelemetry traces, without making OpenTelemetry a dependency of the core.
+## Released
+
+### 0.2.1 (2026-06-20)
+
+- Allocation-free trace-id derivation on the inject hot path. `W3CTraceContext.ToTraceId` encodes the
+  correlation id into a stack buffer and writes the trace-id as lowercase hex directly into a span,
+  removing the per-call `byte[]` and the double string allocation; `CorrelationPropagator.Inject`
+  derives the trace-id once and reuses it instead of hashing the id a second time. No public API or
+  wire-format change.
+
+### 0.2.0 (2026-06-19)
+
+- W3C trace-context bridge. With `UseTraceContext` enabled, the correlation id is aligned with the
+  W3C `traceparent`: on extract, an inbound `traceparent` trace-id becomes the correlation id when no
+  id header is present; on inject, a `traceparent` is emitted whose trace-id is derived from the
+  correlation id, so it never conflicts with `X-Correlation-ID`. The `TraceParentHeader` name is
+  configurable.
+- `OrionTraceContextScope.BeginTraceLinkedScope` reconciles the ambient correlation id with the
+  current `System.Diagnostics.Activity` (adopting a live W3C trace-id, or starting an activity whose
+  trace-id derives from the correlation id) from a public `ActivitySource("Moongazing.OrionLens")`
+  that an OpenTelemetry `AddSource` call can record.
+- `Extract` with `GenerateIdWhenMissing = false` returns a missing inbound id verbatim (empty by
+  default) rather than substituting a `"unknown"` sentinel.
+
+### 0.1.0 (2026-06-15)
+
+- Initial release: the immutable `CorrelationContext`, the `AsyncLocal`-backed `OrionContext` ambient
+  store with nesting scopes, the HTTP-agnostic `CorrelationPropagator`, the `CorrelationMiddleware`
+  (`UseOrionLens()`), the outbound `CorrelationPropagationHandler`, `CorrelationOptions`, and the
+  `AddOrionLens()` DI extension.
+
+## Under consideration
+
+### Near term (0.3.x)
+
 - **Logging enrichment helpers.** Small, opt-in helpers to push the current correlation id (and
-  selected baggage) into a logging scope, so structured logs carry it without a manual
-  `BeginScope` call at every log site.
-- **More transports.** Worked examples and thin adapters for carrying context across common message
-  brokers, building on the already transport-agnostic `CorrelationPropagator`.
+  selected baggage) into a logging scope, so structured logs carry it without a manual `BeginScope`
+  call at every log site. Would stay dependency-light and not bind a specific logging vendor.
 - **Baggage policy.** Optional limits on baggage size and key count, and a way to mark certain keys
-  as inbound-only or non-propagating, to keep headers small and avoid leaking internal data across a
-  trust boundary.
-- **Sampling and redaction hooks.** A way to transform or drop baggage on inject, for redacting
-  sensitive values before they cross a service boundary.
+  as inbound-only or non-propagating, so headers stay small and internal values are not leaked across
+  a trust boundary. This is enforcement at inject/extract time, configured on `CorrelationOptions`.
+
+### After that
+
+- **Deeper Activity integration.** Build on the existing trace-context bridge and
+  `OrionTraceContextScope`: emit baggage as activity tags or baggage on the started activity, and add
+  a single registration helper so the OrionLens `ActivitySource` is wired into OpenTelemetry without
+  a manual `AddSource`. The bridge itself already ships; this is the integration depth on top of it.
+- **Sampling-aware correlation.** Today `traceparent` is emitted with the recorded flag taken from a
+  live `Activity`, but the inbound sampling decision is not read back into the correlation surface.
+  Carry the sampled flag through `Extract`, and let baggage policy react to it (for example, attach
+  heavier diagnostic baggage only on sampled requests).
+- **W3C `baggage` interop.** An optional propagator that reads and writes the standard W3C `baggage`
+  header alongside (or instead of) the custom `X-Orion-Baggage` format, so OrionLens baggage
+  interoperates with other systems that already speak W3C baggage. Selectable through configuration so
+  the existing format stays the default.
+- **Transport adapters.** Thin, separately shipped adapters that carry the correlation context across
+  common message brokers and gRPC, building on the already transport-agnostic `CorrelationPropagator`.
+  The core would stay HTTP-free; each adapter would be opt-in.
 
 ## Out of scope (for now)
 
-- Becoming a full tracing system. OrionLens is a correlation-context primitive; distributed tracing
-  backends remain a separate concern that a diagnostics bridge would feed, not replace.
-- Bundling a specific logging or telemetry vendor. Any enrichment work would stay opt-in and
+- Becoming a full tracing system. OrionLens is a correlation-context primitive; distributed-tracing
+  backends remain a separate concern that the trace-context bridge feeds, not replaces.
+- Bundling a specific logging or telemetry vendor. Enrichment and propagator work stays opt-in and
   dependency-light.
 
 Feedback and pull requests are welcome. See [CONTRIBUTING.md](../CONTRIBUTING.md).
