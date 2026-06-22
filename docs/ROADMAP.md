@@ -4,12 +4,28 @@ OrionLens is an ambient correlation-context library for .NET: a correlation id p
 established at the edge of a request and carried through every `await` and across downstream calls,
 with HTTP-agnostic propagation, an ASP.NET Core middleware, and an outbound `HttpClient` handler.
 
-The current release is **0.2.1**. The sections below record what has shipped and the directions under
+The current release is **0.3.0**. The sections below record what has shipped and the directions under
 consideration next. Forward items are directions, not commitments, and the version groupings indicate
 likely sequencing rather than firm dates. If an item matters to your workload, open an issue and say
 so; real demand is what moves things up the list.
 
 ## Released
+
+### 0.3.0 (2026-06-22)
+
+- Logging enrichment helpers. `ILogger.BeginCorrelationScope(...)` pushes the correlation id (and the
+  baggage keys selected by `CorrelationOptions.LoggedBaggageKeys`) into a logging scope, so structured
+  logs carry it without a manual `BeginScope` at every log site. The scope state is a structured
+  name/value list that providers lift into named properties and that also renders as text. The helpers
+  build only on `Microsoft.Extensions.Logging.Abstractions` and bind no logging sink; an explicit
+  context overload serves background jobs and message consumers that hold a context directly. Only
+  opted-in baggage keys reach the scope.
+- Baggage policy on `CorrelationOptions`, enforced at inject and extract. `MaxBaggageCount` and
+  `MaxBaggageBytes` bound the pair count and the encoded header size by dropping the pairs that would
+  exceed the cap (in ordinal key order) rather than throwing, so a policy breach never fails a live
+  request. `NonPropagatingBaggageKeys` marks keys inbound-only: accepted on extract, never written on
+  inject, so an internal value is not leaked across a trust boundary. With no policy configured,
+  formatting keeps its prior wire output and cost.
 
 ### 0.2.1 (2026-06-20)
 
@@ -42,16 +58,7 @@ so; real demand is what moves things up the list.
 
 ## Under consideration
 
-### Near term (0.3.x)
-
-- **Logging enrichment helpers.** Small, opt-in helpers to push the current correlation id (and
-  selected baggage) into a logging scope, so structured logs carry it without a manual `BeginScope`
-  call at every log site. Would stay dependency-light and not bind a specific logging vendor.
-- **Baggage policy.** Optional limits on baggage size and key count, and a way to mark certain keys
-  as inbound-only or non-propagating, so headers stay small and internal values are not leaked across
-  a trust boundary. This is enforcement at inject/extract time, configured on `CorrelationOptions`.
-
-### After that
+### Near term
 
 - **Deeper Activity integration.** Build on the existing trace-context bridge and
   `OrionTraceContextScope`: emit baggage as activity tags or baggage on the started activity, and add
