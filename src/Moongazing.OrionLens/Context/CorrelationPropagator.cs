@@ -31,11 +31,15 @@ public static class CorrelationPropagator
         CorrelationContext context;
         if (string.IsNullOrEmpty(id))
         {
-            // No inbound correlation id. Prefer aligning with an inbound W3C trace, then minting,
-            // then the configured sentinel (empty by default) taken verbatim as documented.
-            var traceId = options.UseTraceContext
-                ? W3CTraceContext.TryGetTraceId(getHeader(options.TraceParentHeader))
+            // No inbound correlation id. Prefer the current recording Activity's trace-id (when
+            // AlignWithActivity is on), then an inbound W3C trace, then minting, then the configured
+            // sentinel (empty by default) taken verbatim as documented.
+            var activityTraceId = options.AlignWithActivity
+                ? TryGetCurrentActivityTraceId()
                 : null;
+            var traceId = activityTraceId ?? (options.UseTraceContext
+                ? W3CTraceContext.TryGetTraceId(getHeader(options.TraceParentHeader))
+                : null);
 
             if (traceId is not null)
             {
@@ -56,16 +60,74 @@ public static class CorrelationPropagator
             context = CorrelationContext.Create(id);
         }
 
-        var baggage = getHeader(options.BaggageHeader);
-        if (!string.IsNullOrEmpty(baggage))
+        // Carry the inbound sampling decision onto the context so SampledOnlyBaggageKeys can react and
+        // a derived traceparent reflects it. Prefer the current Activity's recorded flag (head-based
+        // sampling already decided locally), then the inbound traceparent flag. When neither is known
+        // the context stays sampled (the behaviour-compatible default); we never force a span.
+        if (options.AlignWithActivity || options.UseTraceContext)
         {
-            foreach (var (key, value) in ParseBaggage(baggage, options))
+            var sampled = (options.AlignWithActivity ? TryGetCurrentActivitySampled() : null)
+                ?? (options.UseTraceContext
+                    ? W3CTraceContext.TryGetSampledFlag(getHeader(options.TraceParentHeader))
+                    : null);
+            if (sampled is { } decision)
             {
-                context = context.WithBaggage(key, value);
+                context = context.WithSampled(decision);
             }
         }
 
+        context = ApplyInboundBaggage(getHeader(options.BaggageHeader), context, options);
+
+        // When W3C baggage interop is on, also admit the standard baggage header. The custom header is
+        // applied first and wins on a key collision (it is the OrionLens-native channel).
+        if (options.UseW3CBaggage
+            && !string.Equals(options.W3CBaggageHeader, options.BaggageHeader, StringComparison.Ordinal))
+        {
+            context = ApplyInboundBaggage(getHeader(options.W3CBaggageHeader), context, options, skipExisting: true);
+        }
+
         return context;
+    }
+
+    private static CorrelationContext ApplyInboundBaggage(
+        string? header, CorrelationContext context, CorrelationOptions options, bool skipExisting = false)
+    {
+        if (string.IsNullOrEmpty(header))
+        {
+            return context;
+        }
+
+        foreach (var (key, value) in ParseBaggage(header, options))
+        {
+            if (skipExisting && context.GetBaggage(key) is not null)
+            {
+                continue;
+            }
+
+            context = context.WithBaggage(key, value);
+        }
+
+        return context;
+    }
+
+    private static string? TryGetCurrentActivityTraceId()
+    {
+        var activity = Activity.Current;
+        if (activity is not { IdFormat: ActivityIdFormat.W3C })
+        {
+            return null;
+        }
+
+        var traceId = activity.TraceId.ToHexString();
+        return traceId.Length == 32 && traceId.AsSpan().IndexOfAnyExcept('0') >= 0 ? traceId : null;
+    }
+
+    private static bool? TryGetCurrentActivitySampled()
+    {
+        var activity = Activity.Current;
+        return activity is null
+            ? null
+            : (activity.ActivityTraceFlags & ActivityTraceFlags.Recorded) != 0;
     }
 
     /// <summary>Write a context's id and baggage into outbound headers.</summary>
@@ -82,10 +144,19 @@ public static class CorrelationPropagator
 
         if (context.Baggage.Count > 0)
         {
-            var formatted = FormatBaggage(context.Baggage, options);
+            var formatted = FormatBaggage(context.Baggage, options, context.IsSampled);
             if (!string.IsNullOrEmpty(formatted))
             {
                 setHeader(options.BaggageHeader, formatted);
+
+                // When W3C baggage interop is on, emit the same policy-filtered payload on the
+                // standard baggage header too, so a system that speaks only W3C baggage still receives
+                // it. The wire encoding is the same key=value comma-joined, percent-encoded form.
+                if (options.UseW3CBaggage
+                    && !string.Equals(options.W3CBaggageHeader, options.BaggageHeader, StringComparison.Ordinal))
+                {
+                    setHeader(options.W3CBaggageHeader, formatted);
+                }
             }
         }
 
@@ -108,7 +179,7 @@ public static class CorrelationPropagator
                 ? activity
                 : null;
 
-            var traceParent = W3CTraceContext.Format(context.CorrelationId, aligned, derivedTraceId);
+            var traceParent = W3CTraceContext.Format(context.CorrelationId, aligned, derivedTraceId, context.IsSampled);
             if (traceParent is not null)
             {
                 setHeader(options.TraceParentHeader, traceParent);
@@ -122,7 +193,8 @@ public static class CorrelationPropagator
     /// ordinal key order so the kept set is deterministic when a cap drops some of them. Returns an
     /// empty string when nothing survives the policy, in which case the header is omitted.
     /// </summary>
-    private static string FormatBaggage(IReadOnlyDictionary<string, string> baggage, CorrelationOptions options)
+    private static string FormatBaggage(
+        IReadOnlyDictionary<string, string> baggage, CorrelationOptions options, bool isSampled)
     {
         if (!options.HasBaggagePolicy)
         {
@@ -132,6 +204,7 @@ public static class CorrelationPropagator
         }
 
         var nonPropagating = options.NonPropagatingBaggageKeys;
+        var sampledOnly = options.SampledOnlyBaggageKeys;
         var maxCount = options.MaxBaggageCount;
         var maxBytes = options.MaxBaggageBytes;
 
@@ -140,10 +213,19 @@ public static class CorrelationPropagator
         var keys = new List<string>(baggage.Count);
         foreach (var key in baggage.Keys)
         {
-            if (nonPropagating.Count == 0 || !nonPropagating.Contains(key))
+            if (nonPropagating.Count > 0 && nonPropagating.Contains(key))
             {
-                keys.Add(key);
+                continue;
             }
+
+            // Sampled-only keys ride only a recorded trace; on an unsampled context they are dropped
+            // so heavy diagnostic baggage does not travel with traces a backend will discard.
+            if (!isSampled && sampledOnly.Count > 0 && sampledOnly.Contains(key))
+            {
+                continue;
+            }
+
+            keys.Add(key);
         }
 
         keys.Sort(StringComparer.Ordinal);

@@ -6,6 +6,18 @@ All notable changes to OrionLens are documented in this file. The format is base
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-27
+
+### Added
+
+- Deeper `System.Diagnostics.Activity` integration, opt-in through `CorrelationOptions.AlignWithActivity`. On extract, when no inbound correlation id header is present and a W3C `Activity` is current, that activity's trace-id seeds the correlation id (ahead of any inbound `traceparent`). When the ASP.NET Core middleware makes a context current, the correlation id is written onto the current `Activity` as a tag (`ActivityCorrelationTag`, default `orion.correlation_id`) and the keys in `ActivityBaggageKeys` are copied onto the activity's baggage, so OrionLens and `Activity`-based tracing agree on the identifier. This never starts a span; an absent activity is left untouched. `OrionTraceContextScope.AlignCurrentActivity` exposes the projection directly for non-middleware hosts.
+- Sampling-aware correlation. `CorrelationContext.IsSampled` carries the head-based sampling decision, seeded on extract from the current `Activity`'s recorded flag or the inbound `traceparent` sampled bit (and otherwise true, the behaviour-compatible default). A derived outbound `traceparent` now reflects the decision in its flags field instead of always emitting `00`. `CorrelationOptions.SampledOnlyBaggageKeys` marks baggage that rides only a sampled trace, so heavier diagnostic baggage travels only with traces a backend keeps. The correlation id always propagates for logging regardless of the decision, and no span is ever force-created.
+- W3C `baggage` header interop, opt-in through `CorrelationOptions.UseW3CBaggage`. On extract both the custom `X-Orion-Baggage` header and the standard `baggage` header (`W3CBaggageHeader`) are parsed, with the custom header authoritative on a key collision. On inject the same policy-filtered payload is written to both headers, so the 0.3.0 baggage policy still holds: non-propagating keys stay off the wire on both channels. With interop off, the custom format remains the sole baggage channel and the wire output is unchanged.
+
+### Notes
+
+- The roadmap's **transport adapters** item (message-broker and gRPC carriers) remains deferred: it ships as separate opt-in adapter packages, outside this core-package release.
+
 ## [0.3.0] - 2026-06-22
 
 ### Added

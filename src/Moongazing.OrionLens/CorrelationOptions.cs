@@ -55,6 +55,61 @@ public sealed class CorrelationOptions
     public string TraceParentHeader { get; set; } = "traceparent";
 
     /// <summary>
+    /// When true, OrionLens aligns the correlation id with the current
+    /// <see cref="System.Diagnostics.Activity"/>. On extract, when no explicit correlation id header
+    /// is present and a recording W3C <see cref="System.Diagnostics.Activity"/> is current, that
+    /// activity's trace-id seeds the correlation id (before any inbound <c>traceparent</c> is
+    /// consulted). When a context is made current through the ASP.NET Core middleware, the correlation
+    /// id is also written onto the current activity as a tag (<see cref="ActivityCorrelationTag"/>) and
+    /// the keys in <see cref="ActivityBaggageKeys"/> are copied onto the activity's baggage, so
+    /// OrionLens and <see cref="System.Diagnostics.Activity"/>-based tracing agree on the identifier.
+    /// This never starts a span; an absent or non-recording activity is left untouched. Defaults to
+    /// false, so behaviour is unchanged unless you opt in.
+    /// </summary>
+    public bool AlignWithActivity { get; set; }
+
+    /// <summary>
+    /// The tag key under which the correlation id is written onto the current
+    /// <see cref="System.Diagnostics.Activity"/> when <see cref="AlignWithActivity"/> is set. Default
+    /// <c>orion.correlation_id</c>.
+    /// </summary>
+    public string ActivityCorrelationTag { get; set; } = "orion.correlation_id";
+
+    /// <summary>
+    /// The baggage keys copied onto the current <see cref="System.Diagnostics.Activity"/> baggage when
+    /// <see cref="AlignWithActivity"/> is set. Selecting keys explicitly keeps internal or
+    /// high-cardinality values off the activity unless opted in. Comparison is ordinal. Empty by
+    /// default, so only the correlation id tag is written.
+    /// </summary>
+    public ISet<string> ActivityBaggageKeys { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// When true, OrionLens reads and writes the standard W3C <c>baggage</c> header (per
+    /// <see href="https://www.w3.org/TR/baggage/"/>) alongside the custom <see cref="BaggageHeader"/>.
+    /// On extract, both headers are parsed (the custom header wins on a key collision). On inject, the
+    /// same baggage policy is applied to both headers, so <see cref="NonPropagatingBaggageKeys"/> stay
+    /// off the wire on either header. Defaults to false, so the custom format remains the sole baggage
+    /// channel unless you opt in.
+    /// </summary>
+    public bool UseW3CBaggage { get; set; }
+
+    /// <summary>
+    /// The standard W3C baggage header name, read and written when <see cref="UseW3CBaggage"/> is set.
+    /// Default <c>baggage</c> per the W3C spec.
+    /// </summary>
+    public string W3CBaggageHeader { get; set; } = "baggage";
+
+    /// <summary>
+    /// Baggage keys propagated only on a sampled (recorded) request. Such a key is always accepted on
+    /// extract, but on inject it is written only when the propagated context is sampled (see
+    /// <see cref="Context.CorrelationContext.IsSampled"/>), so heavier diagnostic baggage rides only
+    /// the traces a backend will actually keep. A key listed here that is also in
+    /// <see cref="NonPropagatingBaggageKeys"/> never propagates. Comparison is ordinal. Empty by
+    /// default.
+    /// </summary>
+    public ISet<string> SampledOnlyBaggageKeys { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
     /// The maximum number of baggage pairs allowed to cross a propagation boundary, or null (the
     /// default) for no limit. The cap is enforced on both inbound extract and outbound inject: once
     /// the limit is reached, further pairs are dropped (not propagated) rather than throwing, so a
@@ -95,6 +150,8 @@ public sealed class CorrelationOptions
         ArgumentException.ThrowIfNullOrEmpty(BaggageHeader);
         ArgumentNullException.ThrowIfNull(MissingIdSentinel);
         ArgumentException.ThrowIfNullOrEmpty(TraceParentHeader);
+        ArgumentException.ThrowIfNullOrEmpty(ActivityCorrelationTag);
+        ArgumentException.ThrowIfNullOrEmpty(W3CBaggageHeader);
 
         if (MaxBaggageCount is <= 0)
         {
@@ -115,5 +172,8 @@ public sealed class CorrelationOptions
     /// extra allocation, so the no-policy case keeps its prior wire output and cost exactly.
     /// </summary>
     internal bool HasBaggagePolicy =>
-        MaxBaggageCount is not null || MaxBaggageBytes is not null || NonPropagatingBaggageKeys.Count > 0;
+        MaxBaggageCount is not null
+        || MaxBaggageBytes is not null
+        || NonPropagatingBaggageKeys.Count > 0
+        || SampledOnlyBaggageKeys.Count > 0;
 }

@@ -51,6 +51,54 @@ internal static class W3CTraceContext
     }
 
     /// <summary>
+    /// Read the W3C sampled (recorded) flag out of a <c>traceparent</c> header value. Returns null
+    /// when the value is absent or malformed, otherwise true when the low bit of the trace-flags field
+    /// is set. Parsing is as lenient as <see cref="TryGetTraceId(string?)"/>: the trace-id must be 32
+    /// hex digits, but the flags field only needs to be two hex digits.
+    /// </summary>
+    /// <param name="traceParent">The inbound <c>traceparent</c> header value.</param>
+    public static bool? TryGetSampledFlag(string? traceParent)
+    {
+        if (string.IsNullOrEmpty(traceParent))
+        {
+            return null;
+        }
+
+        var fields = traceParent.Split('-');
+        if (fields.Length < 4)
+        {
+            return null;
+        }
+
+        if (fields[0] == "00" && fields.Length != 4)
+        {
+            return null;
+        }
+
+        var traceId = fields[1];
+        if (traceId.Length != TraceIdHexLength || !IsLowerHex(traceId) || IsAllZeros(traceId))
+        {
+            return null;
+        }
+
+        var flags = fields[3];
+        if (flags.Length != 2 || !IsLowerHex(flags))
+        {
+            return null;
+        }
+
+        // The sampled flag is the low bit of the 8-bit trace-flags field. Parse the low hex nibble.
+        var low = flags[1];
+        var nibble = low - '0';
+        if (low is >= 'a' and <= 'f')
+        {
+            nibble = (low - 'a') + 10;
+        }
+
+        return (nibble & 0x1) != 0;
+    }
+
+    /// <summary>
     /// Build a <c>traceparent</c> value that carries the given correlation id as its trace-id. When
     /// an <see cref="Activity"/> with W3C ids is supplied its trace-id and span-id are used verbatim
     /// (so the emitted value matches the live trace); otherwise the correlation id is coerced into a
@@ -70,7 +118,21 @@ internal static class W3CTraceContext
     /// <param name="correlationId">The correlation id to align the trace-id with.</param>
     /// <param name="activity">The current activity, if any.</param>
     /// <param name="derivedTraceId">The result of <see cref="ToTraceId(string)"/> for the id.</param>
-    public static string? Format(string correlationId, Activity? activity, string? derivedTraceId)
+    public static string? Format(string correlationId, Activity? activity, string? derivedTraceId) =>
+        Format(correlationId, activity, derivedTraceId, sampled: false);
+
+    /// <summary>
+    /// As <see cref="Format(string, Activity?, string?)"/>, but when no aligned activity supplies the
+    /// trace-flags the derived <c>traceparent</c> carries the given sampled decision in its flags
+    /// field (<c>01</c> when sampled, <c>00</c> otherwise) instead of always emitting <c>00</c>. An
+    /// aligned activity still wins: its own recorded flag is used so the emitted value matches the live
+    /// trace. This never starts or records a span; it only reflects an existing decision on the wire.
+    /// </summary>
+    /// <param name="correlationId">The correlation id to align the trace-id with.</param>
+    /// <param name="activity">The current activity, if any.</param>
+    /// <param name="derivedTraceId">The result of <see cref="ToTraceId(string)"/> for the id.</param>
+    /// <param name="sampled">The sampling decision to encode when no activity supplies one.</param>
+    public static string? Format(string correlationId, Activity? activity, string? derivedTraceId, bool sampled)
     {
         if (activity is not null && activity.IdFormat == ActivityIdFormat.W3C)
         {
@@ -87,7 +149,8 @@ internal static class W3CTraceContext
         }
 
         var spanId = ActivitySpanId.CreateRandom().ToHexString();
-        return $"00-{derivedTraceId}-{spanId}-00";
+        var flags = sampled ? "01" : "00";
+        return $"00-{derivedTraceId}-{spanId}-{flags}";
     }
 
     /// <summary>

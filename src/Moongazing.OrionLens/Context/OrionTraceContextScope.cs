@@ -61,6 +61,45 @@ public static class OrionTraceContextScope
         return new LinkedScope(ambient, started);
     }
 
+    /// <summary>
+    /// Write the correlation id (as a tag named <paramref name="correlationTag"/>) and the selected
+    /// baggage keys onto the current <see cref="Activity"/>, so an <see cref="Activity"/>-based tracer
+    /// surfaces the same identifier OrionLens carries. Does nothing when no activity is current or the
+    /// id is empty; it never starts a span. A baggage key already present on the activity is left as-is
+    /// so an inbound activity baggage value is not overwritten.
+    /// </summary>
+    /// <param name="context">The context whose id and baggage to project onto the activity.</param>
+    /// <param name="correlationTag">The tag key for the correlation id.</param>
+    /// <param name="baggageKeys">The baggage keys to copy onto the activity, or null for none.</param>
+    public static void AlignCurrentActivity(
+        CorrelationContext context, string correlationTag, ISet<string>? baggageKeys = null)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentException.ThrowIfNullOrEmpty(correlationTag);
+
+        var activity = Activity.Current;
+        if (activity is null || string.IsNullOrEmpty(context.CorrelationId))
+        {
+            return;
+        }
+
+        activity.SetTag(correlationTag, context.CorrelationId);
+
+        if (baggageKeys is null || baggageKeys.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var key in baggageKeys)
+        {
+            var value = context.GetBaggage(key);
+            if (value is not null && activity.GetBaggageItem(key) is null)
+            {
+                activity.SetBaggage(key, value);
+            }
+        }
+    }
+
     private static CorrelationContext AlignTo(CorrelationContext context, string traceId)
     {
         if (string.Equals(context.CorrelationId, traceId, StringComparison.Ordinal))
