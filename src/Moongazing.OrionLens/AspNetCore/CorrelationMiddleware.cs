@@ -46,6 +46,16 @@ public sealed class CorrelationMiddleware
 
         using (scope)
         {
+            if (options.AlignWithActivity)
+            {
+                // Project the now-current correlation id (and opted-in baggage) onto the current
+                // Activity so an Activity-based tracer agrees with OrionLens on the identifier. This
+                // reads Activity.Current and never starts a span.
+                var current = OrionContext.Current ?? correlation;
+                OrionTraceContextScope.AlignCurrentActivity(
+                    current, options.ActivityCorrelationTag, options.ActivityBaggageKeys);
+            }
+
             if (options.WriteResponseHeader)
             {
                 // Set before the response starts (this middleware runs early, before any body

@@ -50,6 +50,17 @@ without disturbing its parent.
 - **Baggage policy.** Optional caps on baggage count (`MaxBaggageCount`) and encoded size
   (`MaxBaggageBytes`), and inbound-only keys (`NonPropagatingBaggageKeys`) that are read on extract but
   never emitted on inject, so headers stay small and internal values do not cross a trust boundary.
+- **Activity integration.** When `AlignWithActivity` is enabled, the correlation id seeds from the
+  current `Activity`'s trace-id when no id header is present, and the id (plus opted-in
+  `ActivityBaggageKeys`) is projected onto the current `Activity` as a tag and baggage, so OrionLens
+  and `Activity`-based tracing agree on the identifier. It never starts a span.
+- **Sampling-aware correlation.** `CorrelationContext.IsSampled` carries the head-based sampling
+  decision (from the `Activity` recorded flag or the inbound `traceparent`). `SampledOnlyBaggageKeys`
+  lets heavier diagnostic baggage ride only sampled traces; the correlation id always propagates for
+  logging regardless.
+- **W3C `baggage` interop.** When `UseW3CBaggage` is enabled, the standard `baggage` header is read and
+  written alongside `X-Orion-Baggage`, with the baggage policy applied to both so non-propagating keys
+  stay off either header.
 - **No third-party dependencies.** The core targets `net8.0`, `net9.0`, and `net10.0`; the ASP.NET
   Core surface uses only the shared framework.
 
