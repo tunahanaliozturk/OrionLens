@@ -63,4 +63,8 @@ Initial release. Ambient correlation context.
 21 tests across the context, the ambient store (nesting, async flow), the propagator (extract,
 generate, round-trip, encoding), the middleware, the outbound handler, and registration.
 
+[0.4.0]: https://github.com/tunahanaliozturk/OrionLens/releases/tag/v0.4.0
+[0.3.0]: https://github.com/tunahanaliozturk/OrionLens/releases/tag/v0.3.0
+[0.2.1]: https://github.com/tunahanaliozturk/OrionLens/releases/tag/v0.2.1
+[0.2.0]: https://github.com/tunahanaliozturk/OrionLens/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tunahanaliozturk/OrionLens/releases/tag/v0.1.0

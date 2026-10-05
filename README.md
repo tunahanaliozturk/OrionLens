@@ -1,11 +1,16 @@
 <p align="center">
-  <img src="docs/logo.png" alt="OrionLens" width="150" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo.png">
+    <img src="docs/icon.png" alt="OrionLens logo" width="150">
+  </picture>
 </p>
 
 # OrionLens
 
 [![CI/CD](https://github.com/tunahanaliozturk/OrionLens/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/tunahanaliozturk/OrionLens/actions/workflows/ci-cd.yml)
 [![NuGet](https://img.shields.io/nuget/v/OrionLens.svg)](https://www.nuget.org/packages/OrionLens/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+![.NET 8.0 | 9.0 | 10.0](https://img.shields.io/badge/.NET-8.0%20%7C%209.0%20%7C%2010.0-purple.svg)
 
 Ambient correlation context for .NET. One correlation id, plus a little baggage, is established at
 the edge of a request and flows through every `await` and across every downstream HTTP call, so a
@@ -13,6 +18,8 @@ single logical operation is traceable end to end without threading an id through
 signature.
 
 Part of the **Orion** family. Usable entirely on its own.
+
+![OrionLens overview: the middleware or CorrelationPropagator.Extract sets OrionContext at the inbound edge, your code reads OrionContext.Current, and CorrelationPropagationHandler or CorrelationPropagator.Inject writes it on outbound calls](docs/diagrams/overview.png)
 
 ---
 
@@ -157,6 +164,12 @@ ones. The defaults:
 The handler injects only when there is an ambient context; with no context, the outbound request
 carries no correlation headers.
 
+![One request through OrionLens: the middleware extracts the headers, begins the OrionContext scope and echoes the id; the endpoint reads OrionContext.Current; CorrelationPropagationHandler injects the id and baggage into the downstream call; the scope is disposed at the end](docs/diagrams/request-flow.png)
+
+When a request arrives without an id header, `Extract` falls back in a fixed order:
+
+![CorrelationPropagator.Extract: the id comes from the CorrelationHeader, else the current Activity trace-id (AlignWithActivity), else the traceparent trace-id (UseTraceContext), else a new Guid (GenerateIdWhenMissing), else MissingIdSentinel; then the sampling decision and the baggage are read](docs/diagrams/extract-flow.png)
+
 ### Propagation without ASP.NET
 
 The core (`CorrelationContext`, `OrionContext`, `CorrelationPropagator`) has no HTTP dependency.
@@ -276,10 +289,50 @@ builder.Services.AddOrionLens(o =>
 });
 ```
 
-- `MaxBaggageCount` and `MaxBaggageBytes` cap the pair count and the encoded header size. When a cap
-  is reached, further pairs are dropped in ordinal key order, so the kept set is deterministic.
+- `MaxBaggageCount` and `MaxBaggageBytes` cap the pair count and the encoded header size. On
+  `Inject`, pairs are considered in ordinal key order, so the kept set is deterministic; a pair that
+  would overflow `MaxBaggageBytes` is skipped and later, smaller pairs may still fit. On `Extract`,
+  parsing stops at the cap, so the first pairs in header order are kept.
 - `NonPropagatingBaggageKeys` marks keys inbound-only: such a key is still readable after `Extract`,
   but it is never written on `Inject`.
+- `SampledOnlyBaggageKeys` marks keys that `Inject` writes only when the context is sampled
+  (`CorrelationContext.IsSampled`); see [Activity integration and sampling](#activity-integration-and-sampling).
+
+![CorrelationPropagator.Inject: write the id; with a baggage policy, drop non-propagating and (when unsampled) sampled-only keys, sort by key and apply the count and byte caps; write the baggage header(s), then the traceparent when UseTraceContext is set](docs/diagrams/inject-flow.png)
+
+### Activity integration and sampling
+
+Set `AlignWithActivity` to make OrionLens and `System.Diagnostics.Activity`-based tracing agree on
+the identifier. It is off by default and never starts a span:
+
+```csharp
+builder.Services.AddOrionLens(o =>
+{
+    o.AlignWithActivity = true;
+    o.ActivityBaggageKeys.Add("tenant");          // copied onto Activity baggage
+    o.SampledOnlyBaggageKeys.Add("debug-trace");  // propagated only on sampled traces
+});
+```
+
+- On **extract**, when no id header is present and a W3C `Activity` is current, its trace-id becomes
+  the correlation id (ahead of an inbound `traceparent`).
+- In the **middleware**, the correlation id is written onto `Activity.Current` as the tag named by
+  `ActivityCorrelationTag` (default `orion.correlation_id`), and the keys in `ActivityBaggageKeys` are
+  copied onto the activity's baggage when it does not already carry them. Hosts without the middleware
+  call `OrionTraceContextScope.AlignCurrentActivity(context, tag, keys)` directly.
+- `CorrelationContext.IsSampled` carries the head-based sampling decision, read on extract from the
+  current `Activity`'s recorded flag (with `AlignWithActivity`) or the inbound `traceparent` flags
+  (with `UseTraceContext`); otherwise it is `true`. A derived outbound `traceparent` reflects it.
+
+### W3C `baggage` interop
+
+Set `UseW3CBaggage` to read and write the standard `baggage` header (`W3CBaggageHeader`) alongside
+`X-Orion-Baggage`. On extract, the custom header wins on a key collision; on inject, the same
+policy-filtered value is written to both headers. Off by default:
+
+```csharp
+builder.Services.AddOrionLens(o => o.UseW3CBaggage = true);
+```
 
 ### ASP.NET Core middleware
 
@@ -288,6 +341,14 @@ logs or makes downstream calls, so the ambient context is established for the wh
 middleware extracts the inbound id and baggage, makes them current for the rest of the pipeline, and
 (when `WriteResponseHeader` is set) writes the id back on the response before the body starts, so the
 caller sees it even on an error response.
+
+With `UseTraceContext` set, the middleware opens the scope through
+`OrionTraceContextScope.BeginTraceLinkedScope` instead of `OrionContext.BeginScope`. When a W3C
+`Activity` is already current (ASP.NET Core usually starts one per request when tracing is enabled), the
+correlation id is reconciled to that activity's trace-id, and that is the id echoed on the response
+and propagated downstream. When none is current, an activity is started from
+`OrionTraceContextScope.Source` (`Moongazing.OrionLens`) with a trace-id derived from the correlation
+id.
 
 ---
 
@@ -302,9 +363,16 @@ builder.Services.AddOrionLens(o =>
     o.CorrelationHeader = "X-Correlation-ID";   // inbound/outbound id header
     o.BaggageHeader = "X-Orion-Baggage";        // inbound/outbound baggage header
     o.GenerateIdWhenMissing = true;             // mint a new id when inbound has none
+    o.MissingIdSentinel = "";                   // id used when generation is off and none arrives
     o.WriteResponseHeader = true;               // echo the id on the response
     o.UseTraceContext = true;                   // bridge the id to the W3C traceparent
     o.TraceParentHeader = "traceparent";        // trace-context header name
+    o.AlignWithActivity = true;                 // seed from / project onto Activity.Current
+    o.ActivityCorrelationTag = "orion.correlation_id"; // Activity tag carrying the id
+    o.ActivityBaggageKeys.Add("tenant");        // baggage keys copied onto Activity baggage
+    o.UseW3CBaggage = true;                     // also read and write the W3C baggage header
+    o.W3CBaggageHeader = "baggage";             // W3C baggage header name
+    o.SampledOnlyBaggageKeys.Add("debug");      // baggage keys propagated only when sampled
     o.MaxBaggageCount = 8;                       // cap baggage pair count (null = no cap)
     o.MaxBaggageBytes = 1024;                    // cap encoded baggage size (null = no cap)
     o.NonPropagatingBaggageKeys.Add("internal"); // inbound-only baggage keys
@@ -316,12 +384,19 @@ builder.Services.AddOrionLens(o =>
 |-------------------------|----------|--------------------|-----------------------------------------------------------------------------------------------------------|
 | `CorrelationHeader`     | `string` | `X-Correlation-ID` | Header carrying the correlation id, read inbound and written outbound.                                     |
 | `BaggageHeader`         | `string` | `X-Orion-Baggage`  | Header carrying baggage as percent-encoded `key=value` pairs joined by commas.                             |
-| `GenerateIdWhenMissing` | `bool`   | `true`             | When true, an inbound request without an id is given a freshly generated one; when false, the id is taken verbatim. |
+| `GenerateIdWhenMissing` | `bool`   | `true`             | When true, an inbound request without an id (and no trace-id to adopt) is given a freshly generated one; when false, it gets `MissingIdSentinel`. |
+| `MissingIdSentinel`     | `string` | `""`               | The id used when `GenerateIdWhenMissing` is false and no id arrives. Empty by default, so the missing id is taken verbatim; set e.g. `"unknown"` for a non-empty placeholder. Must not be null. |
 | `WriteResponseHeader`   | `bool`   | `true`             | When true, the middleware echoes the correlation id back on the response.                                 |
 | `UseTraceContext`       | `bool`   | `false`            | When true, aligns the correlation id with the W3C `traceparent`: adopts an inbound trace-id when no id header is present and emits a `traceparent` derived from the id on inject. |
 | `TraceParentHeader`     | `string` | `traceparent`      | Header carrying the W3C trace context, read on extract and written on inject when `UseTraceContext` is set. |
-| `MaxBaggageCount`       | `int?`   | `null`             | Maximum baggage pairs that cross a boundary; over the cap, pairs are dropped in ordinal key order on extract and inject. `null` means no cap. Must be greater than zero when set. |
-| `MaxBaggageBytes`       | `int?`   | `null`             | Maximum encoded baggage header size in bytes; over the cap, pairs are dropped in ordinal key order on extract and inject. `null` means no cap. Must be greater than zero when set. |
+| `AlignWithActivity`     | `bool`   | `false`            | When true, an absent id is seeded from the current W3C `Activity`'s trace-id, the sampling decision is read from it, and the middleware writes the id (and `ActivityBaggageKeys`) onto it. Never starts a span. |
+| `ActivityCorrelationTag` | `string` | `orion.correlation_id` | Tag key for the correlation id on the current `Activity` when `AlignWithActivity` is set. |
+| `ActivityBaggageKeys`   | `ISet<string>` | empty        | Baggage keys copied onto the current `Activity`'s baggage when `AlignWithActivity` is set. |
+| `UseW3CBaggage`         | `bool`   | `false`            | When true, the standard W3C `baggage` header is read and written alongside `BaggageHeader`, with the same policy applied to both. |
+| `W3CBaggageHeader`      | `string` | `baggage`          | The W3C baggage header name used when `UseW3CBaggage` is set. |
+| `SampledOnlyBaggageKeys` | `ISet<string>` | empty       | Baggage keys written on inject only when the context is sampled (`IsSampled`). A key also in `NonPropagatingBaggageKeys` never propagates. |
+| `MaxBaggageCount`       | `int?`   | `null`             | Maximum baggage pairs that cross a boundary; over the cap, pairs are dropped (in ordinal key order on inject, after the first pairs in header order on extract). `null` means no cap. Must be greater than zero when set. |
+| `MaxBaggageBytes`       | `int?`   | `null`             | Maximum encoded baggage header size in bytes; over the cap, pairs are dropped (on inject a pair that does not fit is skipped and later pairs may still fit; on extract parsing stops). `null` means no cap. Must be greater than zero when set. |
 | `NonPropagatingBaggageKeys` | `ISet<string>` | empty      | Baggage keys read on extract but never written on inject, so an internal value does not cross a trust boundary. |
 | `LoggedBaggageKeys`     | `ISet<string>` | empty          | Baggage keys (besides the correlation id) that the logging enrichment helpers push into a logging scope. |
 
@@ -335,11 +410,15 @@ builder.Services.AddOrionLens(o =>
 
 The library ships with a test suite covering the immutable context, the ambient store (nesting and
 async-flow restore), the propagator (extract, generate-when-missing, round-trip, baggage encoding),
-the ASP.NET Core middleware, the outbound handler, and DI registration:
+the ASP.NET Core middleware, the outbound handler, DI registration, logging enrichment, the baggage
+policy, `Activity` integration and W3C baggage interop:
 
 ```bash
 dotnet test
 ```
+
+`tests/Moongazing.OrionLens.AotSmoke` is a small console app that CI publishes with NativeAOT to keep
+the correlation context trim- and AOT-safe.
 
 Micro-benchmarks for the in-memory hot paths live under `benchmarks/Moongazing.OrionLens.Benchmarks`
 and are documented in [benchmarks.md](benchmarks.md). No measured numbers are committed; run them on
@@ -359,6 +438,7 @@ recorded in [CHANGELOG.md](CHANGELOG.md).
 - [docs/FEATURES.md](docs/FEATURES.md) - a deeper breakdown of every public type and how it behaves.
 - [docs/ROADMAP.md](docs/ROADMAP.md) - ideas under consideration (not promises).
 - [benchmarks.md](benchmarks.md) - what the micro-benchmarks measure and how to run them.
+- [SECURITY.md](SECURITY.md) - how to report a vulnerability privately.
 
 ---
 

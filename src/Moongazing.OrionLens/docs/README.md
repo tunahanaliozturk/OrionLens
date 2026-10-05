@@ -1,58 +1,49 @@
 # OrionLens
 
-[![CI/CD](https://github.com/tunahanaliozturk/OrionLens/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/tunahanaliozturk/OrionLens/actions/workflows/ci-cd.yml)
-[![NuGet](https://img.shields.io/nuget/v/OrionLens.svg)](https://www.nuget.org/packages/OrionLens/)
+Ambient correlation context for .NET: one correlation id and a little baggage, set at the edge of a request, flowing through every `await` and onto every downstream HTTP call, without threading an id through your method signatures.
 
-Ambient correlation context for .NET. One correlation id (and a little baggage) is established at
-the edge of a request and flows through every `await` and across every downstream HTTP call, so a
-single operation is traceable end to end without threading an id through every method signature.
-
-Part of the **Orion** family. Usable entirely on its own.
-
-## Why
-
-When a request fans out across services, you want one id stitching the logs together. Passing it
-explicitly everywhere is noise; stuffing it in a thread-local breaks across `await`. OrionLens uses
-`AsyncLocal` so the context follows the logical flow, reads and writes it on the HTTP boundary for
-you, and keeps the data model immutable so a nested scope can add baggage without disturbing its
-parent.
+![One request through OrionLens: the middleware extracts the headers, begins the OrionContext scope and echoes the id; the endpoint reads OrionContext.Current; CorrelationPropagationHandler injects the id and baggage into the downstream call](https://raw.githubusercontent.com/tunahanaliozturk/OrionLens/main/docs/diagrams/request-flow.png)
 
 ## Install
 
-```
-dotnet add package OrionLens
-```
+    dotnet add package OrionLens
+
+Targets `net8.0`, `net9.0` and `net10.0`. References only the ASP.NET Core shared framework; no third-party dependencies.
 
 ## Quick start
 
-Establish context on the way in, propagate it on the way out:
-
 ```csharp
+using Moongazing.OrionLens;
+using Moongazing.OrionLens.Context;
+using Moongazing.OrionLens.Http;
+
+var builder = WebApplication.CreateBuilder(args);
+
 builder.Services.AddOrionLens(o => o.CorrelationHeader = "X-Correlation-ID");
 
-// outbound: attach the handler to any client that calls a downstream service
+// outbound: every call through this client carries the id and baggage
 builder.Services.AddHttpClient("downstream")
     .AddHttpMessageHandler<CorrelationPropagationHandler>();
 
 var app = builder.Build();
 app.UseOrionLens();   // early, before logging and downstream calls
+
+app.MapGet("/orders/{id}", (string id, ILogger<Program> logger) =>
+{
+    logger.LogInformation("Order {OrderId}, correlation {Correlation}",
+        id, OrionContext.Current?.CorrelationId);
+    return Results.Ok();
+});
+
+app.Run();
 ```
 
-Read the context anywhere, with no parameter passing:
-
-```csharp
-var id = OrionContext.Current?.CorrelationId;
-logger.LogInformation("Processing order {OrderId} for correlation {Correlation}", orderId, id);
-
-var tenant = OrionContext.Current?.GetBaggage("tenant");
-```
-
-Add baggage for the rest of the flow:
+Add baggage for the rest of the flow; the context is immutable, so the parent is restored on dispose:
 
 ```csharp
 using (OrionContext.BeginScope(OrionContext.Current!.WithBaggage("tenant", tenantId)))
 {
-    await next();   // everything in here sees the tenant baggage
+    await next();   // everything in here sees OrionContext.Current!.GetBaggage("tenant")
 }
 ```
 
@@ -60,25 +51,28 @@ using (OrionContext.BeginScope(OrionContext.Current!.WithBaggage("tenant", tenan
 
 | Field | Header (default) | Notes |
 |-------|------------------|-------|
-| Correlation id | `X-Correlation-ID` | Read inbound, minted if absent, echoed on the response |
+| Correlation id | `X-Correlation-ID` | Read inbound, minted if absent (`GenerateIdWhenMissing`, default true), echoed on the response (`WriteResponseHeader`, default true) |
 | Baggage | `X-Orion-Baggage` | `key=value` pairs joined by commas, each part percent-encoded |
+| Trace context | `traceparent` | Only with `UseTraceContext` (default false) |
+| W3C baggage | `baggage` | Only with `UseW3CBaggage` (default false) |
 
-The middleware extracts both from the request, makes them the ambient context, and writes the id
-back on the response. The `CorrelationPropagationHandler` injects the current context into every
-outbound request, so downstream services receive the same id and baggage.
+`CorrelationPropagationHandler` injects only when `OrionContext.Current` is set. Without ASP.NET, `CorrelationPropagator.Extract(getHeader, options)` and `CorrelationPropagator.Inject(context, setHeader, options)` work against any header getter and setter, so a message consumer or a background job uses the same logic.
 
-## Without ASP.NET
+## Behaviour
 
-The core (`CorrelationContext`, `OrionContext`, `CorrelationPropagator`) has no HTTP dependency.
-`CorrelationPropagator.Extract` and `Inject` work against any header getter/setter, so you can
-carry context across a message queue or a background job the same way.
+- **Baggage policy**: `MaxBaggageCount`, `MaxBaggageBytes` (both `null`, no cap, by default), `NonPropagatingBaggageKeys` (read inbound, never written) and `SampledOnlyBaggageKeys` (written only when `CorrelationContext.IsSampled`). A breach drops pairs; it never throws.
+- **Activity integration**: `AlignWithActivity` (default false) seeds an absent id from the current W3C `Activity`, and the middleware tags that activity with the id (`ActivityCorrelationTag`, default `orion.correlation_id`). It never starts a span.
+- **Logging**: `logger.BeginCorrelationScope()` (namespace `Moongazing.OrionLens.Logging`) opens a log scope carrying `CorrelationId`; the `BeginCorrelationScope(options)` overload adds the `LoggedBaggageKeys` you opt in. Both return null when no context is set.
+- **Validation**: `AddOrionLens` validates the options at registration, so an empty header name fails at startup.
+- **AOT**: a NativeAOT publish of the context is checked in CI with zero trim/AOT warnings.
 
-## Design
+## Related packages
 
-- Multi-targets `net8.0`, `net9.0`, `net10.0`.
-- `TreatWarningsAsErrors`, latest analyzers, nullable enabled.
-- `CorrelationContext` is immutable; `WithBaggage` returns a new instance, so scopes nest cleanly.
+- `OrionGuard` - guard clauses and validation from the same Orion family.
+- `OrionAudit` - automatic EF Core change-audit trail from the same Orion family.
 
-## License
+## Links
 
-MIT.
+- Documentation and full README: https://github.com/tunahanaliozturk/OrionLens
+- Changelog: https://github.com/tunahanaliozturk/OrionLens/blob/main/CHANGELOG.md
+- License: MIT
