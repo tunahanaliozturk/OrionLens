@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="770" viewBox="0 0 1200 770">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif; fill: #1e1b4b; }
+    .title { font-size: 24px; font-weight: 700; }
+    .subtitle { font-size: 14px; fill: #475569; }
+    .label { font-size: 15px; font-weight: 600; }
+    .small { font-size: 12.5px; fill: #475569; }
+    .code { font-family: "Cascadia Code", Consolas, "SF Mono", monospace; font-size: 13px; fill: #3730a3; }
+    .edge { font-size: 12.5px; fill: #334155; }
+    .step { fill: #eef2ff; stroke: #4f46e5; stroke-width: 2; }
+    .ext { fill: #f0f9ff; stroke: #0284c7; stroke-width: 2; }
+    .ok { fill: #ecfdf5; stroke: #059669; stroke-width: 2; }
+    .fail { fill: #fef2f2; stroke: #dc2626; stroke-width: 2; }
+    .decision { fill: #fffbeb; stroke: #d97706; stroke-width: 2; }
+    .note { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .lane { stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 6 5; }
+    .flow { fill: none; stroke: #64748b; stroke-width: 2; marker-end: url(#arrow); }
+    .flow.alt { stroke: #dc2626; stroke-dasharray: 6 4; marker-end: url(#arrow-fail); }
+    .flow.back { stroke-dasharray: 6 4; }
+    .badge { fill: #4f46e5; }
+    .badge-text { font-size: 12px; font-weight: 700; fill: #ffffff; }
+  </style>
+  <rect width="1200" height="770" fill="#ffffff"/>
+
+  <text class="title" x="40" y="52">OrionLens - CorrelationPropagator.Inject</text>
+  <text class="subtitle" x="40" y="78">What goes on the wire for an outbound call. The baggage policy drops pairs; it never throws, so a breach cannot fail the request.</text>
+
+  <rect class="step" x="40" y="105" width="320" height="56" rx="14"/>
+  <text class="code" x="200" y="138" text-anchor="middle">Inject(context, setHeader, options)</text>
+  <path class="flow" d="M200,161 L200,193"/>
+
+  <rect class="step" x="40" y="195" width="320" height="64" rx="14"/>
+  <text class="label" x="200" y="221" text-anchor="middle">Write the id</text>
+  <text class="code" x="200" y="243" text-anchor="middle">CorrelationHeader = CorrelationId</text>
+  <path class="flow" d="M200,259 L200,293"/>
+
+  <polygon class="decision" points="200,295 350,340 200,385 50,340"/>
+  <text class="small" x="200" y="336" text-anchor="middle">baggage policy configured?</text>
+  <text class="small" x="200" y="354" text-anchor="middle">(any cap or key set)</text>
+
+  <path class="flow" d="M350,340 L398,340"/>
+  <text class="edge" x="374" y="330" text-anchor="middle">yes</text>
+
+  <rect class="step" x="400" y="295" width="250" height="90" rx="14"/>
+  <text class="label" x="420" y="320">Drop keys</text>
+  <text class="small" x="420" y="342">NonPropagatingBaggageKeys;</text>
+  <text class="small" x="420" y="360">SampledOnlyBaggageKeys when</text>
+  <text class="small" x="420" y="378">IsSampled is false</text>
+  <path class="flow" d="M650,340 L678,340"/>
+
+  <rect class="step" x="680" y="295" width="200" height="90" rx="14"/>
+  <text class="label" x="780" y="332" text-anchor="middle">Sort keys</text>
+  <text class="small" x="780" y="354" text-anchor="middle">ordinal order, so the kept</text>
+  <text class="small" x="780" y="372" text-anchor="middle">set is deterministic</text>
+  <path class="flow" d="M880,340 L908,340"/>
+
+  <rect class="step" x="910" y="295" width="250" height="90" rx="14"/>
+  <text class="label" x="930" y="320">Apply caps</text>
+  <text class="small" x="930" y="342">MaxBaggageCount: stop there.</text>
+  <text class="small" x="930" y="360">MaxBaggageBytes: skip a pair that</text>
+  <text class="small" x="930" y="378">does not fit, try the next one.</text>
+  <path class="flow" d="M1035,385 L1035,418"/>
+
+  <path class="flow" d="M200,385 L200,428"/>
+  <text class="edge" x="210" y="410">no</text>
+  <rect class="step" x="40" y="430" width="320" height="64" rx="14"/>
+  <text class="label" x="200" y="456" text-anchor="middle">Every pair</text>
+  <text class="small" x="200" y="478" text-anchor="middle">dictionary order, no filtering</text>
+  <path class="flow" d="M360,462 L908,462"/>
+
+  <rect class="step" x="910" y="420" width="250" height="90" rx="14"/>
+  <text class="label" x="930" y="445">Write baggage</text>
+  <text class="small" x="930" y="467">BaggageHeader, plus the W3C</text>
+  <text class="small" x="930" y="485">baggage header if UseW3CBaggage.</text>
+  <text class="small" x="930" y="503">Skipped when no pair is left.</text>
+  <path class="flow" d="M1035,510 L1035,543"/>
+
+  <rect class="step" x="910" y="545" width="250" height="90" rx="14"/>
+  <text class="label" x="930" y="570">traceparent</text>
+  <text class="small" x="930" y="592">only when UseTraceContext; trace-id</text>
+  <text class="small" x="930" y="610">derived from CorrelationId, flags</text>
+  <text class="small" x="930" y="628">from IsSampled</text>
+  <path class="flow" d="M1035,635 L1035,668"/>
+
+  <rect class="ok" x="910" y="670" width="250" height="64" rx="14"/>
+  <text class="label" x="1035" y="697" text-anchor="middle">Headers set</text>
+  <text class="small" x="1035" y="719" text-anchor="middle">through setHeader</text>
+
+  <rect class="note" x="40" y="540" width="820" height="194" rx="10"/>
+  <text class="label" x="60" y="568">Notes</text>
+  <text class="small" x="60" y="594">CorrelationPropagationHandler calls Inject only when OrionContext.Current is not null, and replaces any header</text>
+  <text class="small" x="60" y="612">of the same name already on the request. With no ambient context the request goes out unchanged.</text>
+  <text class="small" x="60" y="638">A live W3C Activity is reused for the traceparent only when its trace-id equals the one derived from the</text>
+  <text class="small" x="60" y="656">correlation id (an id of 32 lowercase hex is used as-is; any other id is hashed), so it never conflicts.</text>
+  <text class="small" x="60" y="682">Extract applies MaxBaggageCount and MaxBaggageBytes too, keeping the first pairs in header order, and it</text>
+  <text class="small" x="60" y="700">still accepts NonPropagatingBaggageKeys so your code can read them.</text>
+</svg>

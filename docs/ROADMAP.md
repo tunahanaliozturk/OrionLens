@@ -81,7 +81,7 @@ so; real demand is what moves things up the list.
 - **Transport adapters.** Thin, separately shipped adapters that carry the correlation context across
   common message brokers and gRPC, building on the already transport-agnostic `CorrelationPropagator`.
   The core would stay HTTP-free; each adapter would be opt-in. Still planned: this ships as separate
-  adapter packages, deliberately outside the core `Moongazing.OrionLens` package, so it is deferred
+  adapter packages, deliberately outside the core `OrionLens` package, so it is deferred
   past 0.4.0 rather than bundled into the core.
 - **OpenTelemetry registration helper.** A single registration call so the OrionLens `ActivitySource`
   is wired into an OpenTelemetry `TracerProvider` without a manual `AddSource`. The 0.4.0 Activity

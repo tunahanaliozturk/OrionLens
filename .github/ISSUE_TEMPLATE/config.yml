@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/tunahanaliozturk/OrionLens#readme
+    about: "\"How do I ...\" is usually answered in the README or docs/FEATURES.md; they document the real behaviour."
+  - name: Roadmap
+    url: https://github.com/tunahanaliozturk/OrionLens/blob/main/docs/ROADMAP.md
+    about: What is planned next. Comment on a roadmap item rather than opening a duplicate request.
+  - name: Security vulnerability
+    url: https://github.com/tunahanaliozturk/OrionLens/blob/main/SECURITY.md
+    about: Do not file a public issue. Report it privately as described in SECURITY.md.
