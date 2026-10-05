@@ -348,7 +348,9 @@ With `UseTraceContext` set, the middleware opens the scope through
 correlation id is reconciled to that activity's trace-id, and that is the id echoed on the response
 and propagated downstream. When none is current, an activity is started from
 `OrionTraceContextScope.Source` (`Moongazing.OrionLens`) with a trace-id derived from the correlation
-id.
+id, but only when something listens to that source (an `ActivityListener`, or OpenTelemetry with
+`AddSource("Moongazing.OrionLens")`). With no listener, `ActivitySource.StartActivity` returns null,
+so the scope sets only the ambient Orion context and no activity is started.
 
 ---
 
